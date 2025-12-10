@@ -1,120 +1,96 @@
 // routes/ai.js
 import express from "express";
 import multer from "multer";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import Groq from "groq-sdk";
+import pdf from "pdf-parse"; // <-- Import pdf-parse
 import dotenv from "dotenv";
 import dns from "node:dns";
 
-// Force IPv4 to prevent fetch failures on some networks
 dns.setDefaultResultOrder("ipv4first");
-
 dotenv.config();
-const router = express.Router();
 
-// Configure Multer (5MB limit)
+const router = express.Router();
 const upload = multer({ 
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-// Environment Check
-const { AUTH_SECRET, GROQ_API_KEY, GOOGLE_GEMINI_API_KEY } = process.env;
-
-if (!AUTH_SECRET || !GROQ_API_KEY || !GOOGLE_GEMINI_API_KEY) {
-  console.error("❌ Missing API Keys in .env file");
+const { AUTH_SECRET, GROQ_API_KEY } = process.env;
+if (!AUTH_SECRET || !GROQ_API_KEY) {
+  console.error("❌ Missing Groq API Key or Auth Secret in .env file");
 }
-
-// Initialize Clients
-const genAI = new GoogleGenerativeAI(GOOGLE_GEMINI_API_KEY);
-
-// Use the model that appeared in your list
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); 
 
 const groq = new Groq({ apiKey: GROQ_API_KEY });
 
-// Helper: Generate Prompt
-const generatePrompt = (jobDescription) => {
+// MODIFIED: This prompt now takes the extracted resume text
+const generateResumePrompt = (resumeText, jobDescription) => {
   const basePrompt = `
-    You are an advanced AI model designed to analyze the compatibility between a CV and a job description. 
-    Your task is to output a structured JSON format.
+    You are an expert AI resume analyzer. Your task is to analyze the provided resume text and return a structured JSON object.
     
-    1. matching_analysis: Analyze the CV against the job description (strengths & gaps).
-    2. description: Summary of relevance.
-    3. score: Numerical compatibility score (0-100).
-    4. skill_match_score: Numerical score (0-100) for hard skills.
-    5. recommendation: Actionable advice.
+    1. matching_analysis: Analyze the resume against the job description (strengths & gaps). If no job description is provided, give a general analysis.
+    2. description: A concise summary of the candidate's professional profile based on the resume.
+    3. score: A general compatibility score (0-100) for a typical role matching the skills.
+    4. skill_match_score: If a job description is provided, a score (0-100) for how well skills match. Otherwise, set to null.
+    5. recommendation: Actionable advice to improve the resume.
+
+    Output ONLY the valid JSON object. Do not include any other text or markdown formatting.
   `;
 
   const context = jobDescription 
-    ? `Here is the Job Description: ${jobDescription}`
-    : `As no job description is provided, analyze the CV generally.`;
+    ? `A job description is provided for context: "${jobDescription}"`
+    : `No job description was provided. Perform a general analysis.`;
 
   return `
     ${basePrompt}
     ${context}
-    The CV is attached. Output ONLY valid JSON inside a code block.
-  `;
-};
 
-// Helper: Retry Logic for Google AI
-const generateContentWithRetry = async (parts, retries = 3) => {
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await model.generateContent(parts);
-    } catch (error) {
-      // Retry on Rate Limit (429) or Server Error (503)
-      if ((error.status === 429 || error.status === 503) && i < retries - 1) {
-        console.log(`⚠️ Google AI busy (Attempt ${i + 1}/${retries}). Retrying in 4s...`);
-        await new Promise((resolve) => setTimeout(resolve, 4000));
-      } else {
-        throw error;
-      }
-    }
-  }
+    Here is the extracted text from the user's CV:
+    ---
+    ${resumeText}
+    ---
+  `;
 };
 
 // --- ROUTES ---
 
-// 1. Resume Analyzer Route
+// 1. MODIFIED Resume Analyzer Route (Now uses Groq)
 router.post("/upload-resume", upload.single("file"), async (req, res) => {
   try {
-    // Auth Check
     const authHeader = req.headers.authorization || req.headers.Authorization;
     if (!authHeader || authHeader !== AUTH_SECRET) {
       return res.status(401).json({ error: "Unauthorized or invalid secret." });
     }
 
-    // File Check
     if (!req.file) return res.status(400).json({ error: "No file uploaded." });
-    if (req.file.mimetype !== "application/pdf") return res.status(400).json({ error: "Only PDF files are supported." });
+
+    // Step 1: Extract text from the PDF buffer
+    const pdfData = await pdf(req.file.buffer);
+    const resumeText = pdfData.text;
+
+    if (!resumeText) {
+      return res.status(400).json({ error: "Could not extract text from PDF." });
+    }
 
     const jobDescription = req.body.job_description;
-    const pdfBase64 = req.file.buffer.toString("base64");
-    const prompt = generatePrompt(jobDescription);
+    
+    // Step 2: Generate the prompt with the extracted text
+    const prompt = generateResumePrompt(resumeText, jobDescription);
 
-    // Call AI with Retry
-    const result = await generateContentWithRetry([
-      prompt,
-      {
-        inlineData: {
-          data: pdfBase64,
-          mimeType: "application/pdf",
-        },
-      },
-    ]);
+    // Step 3: Call Groq API (non-streaming for a single JSON response)
+    const completion = await groq.chat.completions.create({
+      messages: [{ role: "user", content: prompt }],
+      model: "llama-3.1-70b-versatile", // Or another powerful model
+      temperature: 0.2, // Lower temperature for more consistent JSON
+    });
 
-    const response = await result.response;
-    let text = response.text();
+    let text = completion.choices[0]?.message?.content || "";
 
-    // FIX: Robust JSON Extraction
-    // Finds the first { and last } to ignore Markdown wrappers
+    // Step 4: Robust JSON Extraction (same as before)
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-        text = jsonMatch[0];
+      text = jsonMatch[0];
     } else {
-        // Fallback cleanup
-        text = text.replace(/``````/g, "").trim();
+      text = text.replace(/``````/g, "").trim();
     }
 
     try {
@@ -126,13 +102,16 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
     }
 
   } catch (error) {
-    console.error("❌ Error processing resume:", error);
+    console.error("❌ Error processing resume with Groq:", error);
     return res.status(500).json({ 
       error: "Internal Server Error", 
       details: error.message 
     });
   }
 });
+
+
+
 
 // 2. Chatbot Route (Genie)
 router.post("/genie", async (req, res) => {
