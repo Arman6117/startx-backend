@@ -21,6 +21,29 @@ if (!AUTH_SECRET || !GROQ_API_KEY) {
 
 const groq = new Groq({ apiKey: GROQ_API_KEY });
 
+// Helper: Extract text from PDF using pdfjs-dist
+async function extractTextFromPDF(buffer) {
+  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(buffer),
+    useSystemFonts: true,
+  });
+  
+  const pdfDocument = await loadingTask.promise;
+  const numPages = pdfDocument.numPages;
+  let fullText = "";
+
+  for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+    const page = await pdfDocument.getPage(pageNum);
+    const textContent = await page.getTextContent();
+    const pageText = textContent.items.map(item => item.str).join(" ");
+    fullText += pageText + "\n";
+  }
+
+  return fullText.trim();
+}
+
 const generateResumePrompt = (resumeText, jobDescription) => {
   const basePrompt = `
     You are an expert AI resume analyzer. Your task is to analyze the provided resume text and return a structured JSON object.
@@ -51,7 +74,7 @@ const generateResumePrompt = (resumeText, jobDescription) => {
 
 // --- ROUTES ---
 
-// 1. Resume Analyzer Route (Using Groq with corrected pdf-parse import)
+// 1. Resume Analyzer Route (Using pdfjs-dist for text extraction)
 router.post("/upload-resume", upload.single("file"), async (req, res) => {
   try {
     const authHeader = req.headers.authorization || req.headers.Authorization;
@@ -61,20 +84,14 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
 
     if (!req.file) return res.status(400).json({ error: "No file uploaded." });
 
-    // CORRECTED: Import the entire module and use it correctly
-    const pdfParseModule = await import("pdf-parse");
-    const pdfParse = pdfParseModule.default || pdfParseModule;
-
-    // Step 1: Extract text from the PDF buffer
-    let pdfData;
+    // Step 1: Extract text from PDF using pdfjs-dist
+    let resumeText;
     try {
-      pdfData = await pdfParse(req.file.buffer);
+      resumeText = await extractTextFromPDF(req.file.buffer);
     } catch (pdfError) {
       console.error("PDF parsing error:", pdfError);
       return res.status(400).json({ error: "Failed to parse PDF file. It might be corrupted or password-protected." });
     }
-
-    const resumeText = pdfData.text;
 
     if (!resumeText || resumeText.trim().length === 0) {
       return res.status(400).json({ error: "Could not extract text from PDF. The file might be empty or image-based." });
@@ -87,7 +104,7 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
     // Step 2: Generate the prompt with the extracted text
     const prompt = generateResumePrompt(resumeText, jobDescription);
 
-    // Step 3: Call Groq API (non-streaming for a single JSON response)
+    // Step 3: Call Groq API
     const completion = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
       model: "llama-3.1-70b-versatile",
