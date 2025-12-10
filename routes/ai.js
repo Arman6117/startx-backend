@@ -51,7 +51,7 @@ const generateResumePrompt = (resumeText, jobDescription) => {
 
 // --- ROUTES ---
 
-// 1. Resume Analyzer Route (Using Groq with dynamic pdf-parse import)
+// 1. Resume Analyzer Route (Using Groq with corrected pdf-parse import)
 router.post("/upload-resume", upload.single("file"), async (req, res) => {
   try {
     const authHeader = req.headers.authorization || req.headers.Authorization;
@@ -61,16 +61,26 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
 
     if (!req.file) return res.status(400).json({ error: "No file uploaded." });
 
-    // DYNAMIC IMPORT FIX: Import pdf-parse at runtime
-    const pdf = (await import("pdf-parse")).default;
+    // CORRECTED: Import the entire module and use it correctly
+    const pdfParseModule = await import("pdf-parse");
+    const pdfParse = pdfParseModule.default || pdfParseModule;
 
     // Step 1: Extract text from the PDF buffer
-    const pdfData = await pdf(req.file.buffer);
+    let pdfData;
+    try {
+      pdfData = await pdfParse(req.file.buffer);
+    } catch (pdfError) {
+      console.error("PDF parsing error:", pdfError);
+      return res.status(400).json({ error: "Failed to parse PDF file. It might be corrupted or password-protected." });
+    }
+
     const resumeText = pdfData.text;
 
     if (!resumeText || resumeText.trim().length === 0) {
       return res.status(400).json({ error: "Could not extract text from PDF. The file might be empty or image-based." });
     }
+
+    console.log("✅ Extracted text length:", resumeText.length);
 
     const jobDescription = req.body.job_description;
     
@@ -111,7 +121,7 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
   }
 });
 
-// 2. Chatbot Route (Genie - No change needed)
+// 2. Chatbot Route (Genie)
 router.post("/genie", async (req, res) => {
   try {
     const authHeader = req.headers.authorization || req.headers.Authorization;
