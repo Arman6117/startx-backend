@@ -2,7 +2,6 @@
 import express from "express";
 import multer from "multer";
 import Groq from "groq-sdk";
-import pdf from "pdf-parse"; // <-- Import pdf-parse
 import dotenv from "dotenv";
 import dns from "node:dns";
 
@@ -22,7 +21,6 @@ if (!AUTH_SECRET || !GROQ_API_KEY) {
 
 const groq = new Groq({ apiKey: GROQ_API_KEY });
 
-// MODIFIED: This prompt now takes the extracted resume text
 const generateResumePrompt = (resumeText, jobDescription) => {
   const basePrompt = `
     You are an expert AI resume analyzer. Your task is to analyze the provided resume text and return a structured JSON object.
@@ -53,7 +51,7 @@ const generateResumePrompt = (resumeText, jobDescription) => {
 
 // --- ROUTES ---
 
-// 1. MODIFIED Resume Analyzer Route (Now uses Groq)
+// 1. Resume Analyzer Route (Using Groq with dynamic pdf-parse import)
 router.post("/upload-resume", upload.single("file"), async (req, res) => {
   try {
     const authHeader = req.headers.authorization || req.headers.Authorization;
@@ -63,12 +61,15 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
 
     if (!req.file) return res.status(400).json({ error: "No file uploaded." });
 
+    // DYNAMIC IMPORT FIX: Import pdf-parse at runtime
+    const pdf = (await import("pdf-parse")).default;
+
     // Step 1: Extract text from the PDF buffer
     const pdfData = await pdf(req.file.buffer);
     const resumeText = pdfData.text;
 
-    if (!resumeText) {
-      return res.status(400).json({ error: "Could not extract text from PDF." });
+    if (!resumeText || resumeText.trim().length === 0) {
+      return res.status(400).json({ error: "Could not extract text from PDF. The file might be empty or image-based." });
     }
 
     const jobDescription = req.body.job_description;
@@ -79,13 +80,13 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
     // Step 3: Call Groq API (non-streaming for a single JSON response)
     const completion = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
-      model: "llama-3.1-70b-versatile", // Or another powerful model
-      temperature: 0.2, // Lower temperature for more consistent JSON
+      model: "llama-3.1-70b-versatile",
+      temperature: 0.2,
     });
 
     let text = completion.choices[0]?.message?.content || "";
 
-    // Step 4: Robust JSON Extraction (same as before)
+    // Step 4: Robust JSON Extraction
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       text = jsonMatch[0];
@@ -110,10 +111,7 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
   }
 });
 
-
-
-
-// 2. Chatbot Route (Genie)
+// 2. Chatbot Route (Genie - No change needed)
 router.post("/genie", async (req, res) => {
   try {
     const authHeader = req.headers.authorization || req.headers.Authorization;
@@ -125,7 +123,6 @@ router.post("/genie", async (req, res) => {
     if (!query) return res.status(400).json({ error: "Query parameter is required." });
     if (!Array.isArray(chat_history)) return res.status(400).json({ error: "chat_history must be a list." });
 
-    // System Prompt
     const systemMessage = {
       role: "system",
       content: `You are StartX, an AI-powered assistant for the StartX job portal platform.
@@ -138,7 +135,7 @@ router.post("/genie", async (req, res) => {
       Direct users to these links:
       - Home: https://startx-frontend.vercel.app/
       - Search: https://startx-frontend.vercel.app/search
-      - Resume AI:https://startx-frontend.vercel.app/resume
+      - Resume AI: https://startx-frontend.vercel.app/resume
       
       Maintain a professional, helpful tone.`
     };
@@ -149,7 +146,6 @@ router.post("/genie", async (req, res) => {
       { role: "user", content: query }
     ];
 
-    // Streaming Headers
     res.setHeader("Content-Type", "text/plain");
     res.setHeader("Transfer-Encoding", "chunked");
 
