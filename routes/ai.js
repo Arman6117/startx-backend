@@ -74,7 +74,7 @@ const generateResumePrompt = (resumeText, jobDescription) => {
 
 // --- ROUTES ---
 
-// 1. Resume Analyzer Route (Using pdfjs-dist for text extraction)
+// 1. Resume Analyzer Route
 router.post("/upload-resume", upload.single("file"), async (req, res) => {
   try {
     const authHeader = req.headers.authorization || req.headers.Authorization;
@@ -107,7 +107,8 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
     // Step 3: Call Groq API
     const completion = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
-      model: "llama-3.1-70b-versatile",
+      // UPDATED MODEL ID: llama-3.1-70b-versatile -> llama-3.3-70b-versatile
+      model: "llama-3.3-70b-versatile", 
       temperature: 0.2,
     });
 
@@ -138,7 +139,7 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
   }
 });
 
-// 2. Chatbot Route (Genie)
+// 2. Chatbot Route (Genie) - Also updated to use 3.3 just in case
 router.post("/genie", async (req, res) => {
   try {
     const authHeader = req.headers.authorization || req.headers.Authorization;
@@ -178,6 +179,7 @@ router.post("/genie", async (req, res) => {
 
     const completion = await groq.chat.completions.create({
       messages: messages,
+      // UPDATED MODEL ID HERE TOO
       model: "llama-3.3-70b-versatile",
       temperature: 0.6,
       max_tokens: 1500,
