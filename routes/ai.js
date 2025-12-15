@@ -44,31 +44,45 @@ async function extractTextFromPDF(buffer) {
   return fullText.trim();
 }
 
+// UPDATED PROMPT: More explicit about text format
 const generateResumePrompt = (resumeText, jobDescription) => {
   const basePrompt = `
-    You are an expert AI resume analyzer. Your task is to analyze the provided resume text and return a structured JSON object.
-    
-    1. matching_analysis: Analyze the resume against the job description (strengths & gaps). If no job description is provided, give a general analysis.
-    2. description: A concise summary of the candidate's professional profile based on the resume.
-    3. score: A general compatibility score (0-100) for a typical role matching the skills.
-    4. skill_match_score: If a job description is provided, a score (0-100) for how well skills match. Otherwise, set to null.
-    5. recommendation: Actionable advice to improve the resume.
+    You are an expert AI resume analyzer. Your task is to analyze the provided resume text and return a structured JSON object with the following fields:
 
-    Output ONLY the valid JSON object. Do not include any other text or markdown formatting.
+    1. "matching_analysis": A detailed paragraph (150-200 words) analyzing how well the resume matches the job description. Discuss strengths, gaps, and overall fit. Write in plain English, NOT as a JSON object.
+
+    2. "description": A concise 2-3 sentence summary of the candidate's professional profile.
+
+    3. "score": A numerical score (0-100) representing overall compatibility.
+
+    4. "skill_match_score": A numerical score (0-100) for hard skills match. Set to null if no job description is provided.
+
+    5. "recommendation": A bulleted list of 3-5 actionable recommendations to improve the resume. Format as a plain string with bullet points like this:
+       - Recommendation 1
+       - Recommendation 2
+       - Recommendation 3
+
+    IMPORTANT FORMATTING RULES:
+    - "matching_analysis" must be a PLAIN TEXT paragraph, NOT a nested JSON object.
+    - "recommendation" must be a PLAIN TEXT string with bullet points, NOT an array or nested object.
+    - Output ONLY valid JSON with these exact field names.
+    - Do NOT wrap the JSON in markdown code blocks.
   `;
 
   const context = jobDescription 
-    ? `A job description is provided for context: "${jobDescription}"`
-    : `No job description was provided. Perform a general analysis.`;
+    ? `\n\nJob Description Provided:\n"${jobDescription}"\n\nAnalyze the resume against this specific job description.`
+    : `\n\nNo job description was provided. Perform a general analysis of the resume's strengths and areas for improvement.`;
 
   return `
     ${basePrompt}
     ${context}
 
-    Here is the extracted text from the user's CV:
+    Resume Text:
     ---
     ${resumeText}
     ---
+
+    Return the JSON object now:
   `;
 };
 
@@ -107,9 +121,9 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
     // Step 3: Call Groq API
     const completion = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
-      // UPDATED MODEL ID: llama-3.1-70b-versatile -> llama-3.3-70b-versatile
       model: "llama-3.3-70b-versatile", 
       temperature: 0.2,
+      max_tokens: 2000, // Increased for longer analysis
     });
 
     let text = completion.choices[0]?.message?.content || "";
@@ -119,7 +133,8 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
     if (jsonMatch) {
       text = jsonMatch[0];
     } else {
-      text = text.replace(/``````/g, "").trim();
+      // Fallback: remove markdown code blocks
+      text = text.replace(/```json/g, "").replace(/```/g, "").trim();
     }
 
     try {
@@ -139,7 +154,7 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
   }
 });
 
-// 2. Chatbot Route (Genie) - Also updated to use 3.3 just in case
+// 2. Chatbot Route (Genie)
 router.post("/genie", async (req, res) => {
   try {
     const authHeader = req.headers.authorization || req.headers.Authorization;
@@ -179,7 +194,6 @@ router.post("/genie", async (req, res) => {
 
     const completion = await groq.chat.completions.create({
       messages: messages,
-      // UPDATED MODEL ID HERE TOO
       model: "llama-3.3-70b-versatile",
       temperature: 0.6,
       max_tokens: 1500,
