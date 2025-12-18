@@ -98,7 +98,6 @@ router.post("/upload-resume", upload.single("file"), async (req, res) => {
 
     if (!req.file) return res.status(400).json({ error: "No file uploaded." });
 
-    // Step 1: Extract text from PDF using pdfjs-dist
     let resumeText;
     try {
       resumeText = await extractTextFromPDF(req.file.buffer);
